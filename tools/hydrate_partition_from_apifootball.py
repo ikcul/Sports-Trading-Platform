@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import argparse
 import csv
 import json
 import os
@@ -15,9 +16,18 @@ BACKEND = PROJECT_ROOT / "backend"
 SOURCE_PARTITION = PROJECT_ROOT / "data" / "world_cup_2026_jun11_jun28"
 REAL_PARTITION = PROJECT_ROOT / "data" / "world_cup_2026_jun11_jun28_real"
 STATUS_PATH = REAL_PARTITION / "hydration_status.json"
+QUOTA_PATH = REAL_PARTITION / "api_football_quota_usage.json"
 EXPECTED_MATCH_COUNT = 73
 DATE_FROM = "2026-06-11"
 DATE_TO = "2026-06-28"
+API_CALL_LIMIT = 90
+TEAM_ALIASES = {
+    "czechia": "czechrepublic",
+    "korearepublic": "southkorea",
+    "iriran": "iran",
+    "usa": "unitedstates",
+    "unitedstatesofamerica": "unitedstates",
+}
 
 sys.path.insert(0, str(BACKEND))
 
@@ -43,6 +53,30 @@ def write_status(payload: dict[str, object]) -> None:
     print(json.dumps(payload, indent=2, default=str))
 
 
+def read_quota() -> dict[str, object]:
+    if not QUOTA_PATH.exists():
+        return {"used": 0, "limit": API_CALL_LIMIT, "calls": []}
+    return json.loads(QUOTA_PATH.read_text(encoding="utf-8"))
+
+
+def write_quota(payload: dict[str, object]) -> None:
+    REAL_PARTITION.mkdir(parents=True, exist_ok=True)
+    QUOTA_PATH.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+
+
+def quota_available(count: int = 1) -> bool:
+    quota = read_quota()
+    return int(quota.get("used", 0)) + count <= int(quota.get("limit", API_CALL_LIMIT))
+
+
+def record_quota_call(endpoint: str) -> None:
+    quota = read_quota()
+    calls = list(quota.get("calls", []))
+    calls.append({"endpoint": endpoint, "sequence": len(calls) + 1})
+    quota.update({"used": int(quota.get("used", 0)) + 1, "limit": API_CALL_LIMIT, "calls": calls})
+    write_quota(quota)
+
+
 def repo_path(path: Path) -> str:
     return path.relative_to(PROJECT_ROOT).as_posix()
 
@@ -52,7 +86,8 @@ def iso(dt) -> str:
 
 
 def normalize_team(value: str) -> str:
-    return "".join(ch for ch in value.casefold() if ch.isalnum())
+    normalized = "".join(ch for ch in value.casefold() if ch.isalnum())
+    return TEAM_ALIASES.get(normalized, normalized)
 
 
 def market_key(row: dict[str, str]) -> tuple[str, str]:
@@ -65,7 +100,21 @@ def fixture_key(fixture: OpenFixture) -> tuple[str, str]:
     return (fixture.kickoff_at.date().isoformat(), "|".join(teams))
 
 
+def snapshot_confidence(snapshot) -> float:
+    home_games = float(snapshot.metadata.get("home_games", 0)) if hasattr(snapshot, "metadata") else 0.0
+    away_games = float(snapshot.metadata.get("away_games", 0)) if hasattr(snapshot, "metadata") else 0.0
+    sample_score = min(1.0, (home_games + away_games) / 12)
+    return round(min(0.95, 0.70 + sample_score * 0.20), 3)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Hydrate strict World Cup replay partitions from API-Football.")
+    parser.add_argument("--dry-run", action="store_true", help="Validate credentials, quota budget, and fixture mapping without writing partition CSVs.")
+    return parser.parse_args()
+
+
 async def main() -> None:
+    args = parse_args()
     api_key = os.getenv("APIFOOTBALL_API_KEY", "").strip()
     competition = os.getenv("APIFOOTBALL_WORLD_CUP_LEAGUE_ID", "").strip()
     if not api_key or not competition:
@@ -80,7 +129,19 @@ async def main() -> None:
         return
 
     client = APIFootballClient(api_key=api_key)
+    expected_calls = 1 + EXPECTED_MATCH_COUNT
+    if not quota_available(expected_calls):
+        write_status(
+            {
+                "status": "blocked_api_football_quota_budget",
+                "quota": read_quota(),
+                "expected_additional_calls": expected_calls,
+                "reason": "Hydration must stay under the local API call budget before requesting fixtures or snapshots.",
+            }
+        )
+        return
     provider_fixtures = await client.fixtures(competition=competition, season=2026, date_from=DATE_FROM, date_to=DATE_TO)
+    record_quota_call("fixtures")
     if len(provider_fixtures) != EXPECTED_MATCH_COUNT:
         write_status(
             {
@@ -95,6 +156,27 @@ async def main() -> None:
 
     market_rows = read_csv(SOURCE_PARTITION / "fixtures_required.csv")
     market_by_key = {market_key(row): row for row in market_rows}
+    precheck_unmatched = [asdict(fixture) for fixture in provider_fixtures if fixture_key(fixture) not in market_by_key]
+    if precheck_unmatched:
+        write_status(
+            {
+                "status": "blocked_unmatched_provider_fixtures",
+                "unmatched_count": len(precheck_unmatched),
+                "unmatched": precheck_unmatched,
+                "reason": "Every provider fixture must map to a discovered Kalshi market event before snapshot API calls.",
+            }
+        )
+        return
+    if args.dry_run:
+        write_status(
+            {
+                "status": "dry_run_ready",
+                "provider_match_count": len(provider_fixtures),
+                "quota": read_quota(),
+                "reason": "Fixture coverage and Kalshi mapping passed without writing partition CSVs.",
+            }
+        )
+        return
     fixture_rows: list[dict[str, object]] = []
     feature_rows: list[dict[str, object]] = []
     evidence_rows: list[dict[str, object]] = []
@@ -107,9 +189,28 @@ async def main() -> None:
             continue
 
         as_of = fixture.kickoff_at - timedelta(minutes=30)
+        if not quota_available(1):
+            write_status(
+                {
+                    "status": "blocked_api_football_quota_budget",
+                    "quota": read_quota(),
+                    "reason": "Snapshot hydration stopped before exceeding the local API call budget.",
+                }
+            )
+            return
         snapshot = await client.performance_snapshot(fixture, as_of)
+        record_quota_call("performance_snapshot")
         if snapshot.observed_at >= fixture.kickoff_at:
-            raise ValueError(f"snapshot leak detected for {fixture.provider_match_id}")
+            write_status(
+                {
+                    "status": "blocked_snapshot_lookahead_leak",
+                    "provider_match_id": fixture.provider_match_id,
+                    "snapshot_observed_at": iso(snapshot.observed_at),
+                    "kickoff_at": iso(fixture.kickoff_at),
+                    "reason": "Provider snapshot timestamp is not strictly before kickoff.",
+                }
+            )
+            return
 
         event_ticker = market_row["event_ticker"]
         fixture_rows.append(
@@ -155,7 +256,7 @@ async def main() -> None:
                 "agent": "statistics",
                 "source_name": "API-Football fixtures endpoint",
                 "source_type": "analytics_provider",
-                "confidence": "0.90",
+                "confidence": snapshot_confidence(snapshot),
                 "fact": "Rolling team form generated from completed fixtures strictly before as_of.",
                 "source_url": snapshot.source_url,
                 "hydration_status": "api_football_point_in_time",

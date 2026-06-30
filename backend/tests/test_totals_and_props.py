@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from app.domain.schemas import EnsembleOutput, MarketSnapshot
 from app.models.probability import MonteCarloSimulator
+from app.domain.schemas import RecommendationStatus
 from app.services.recommendations import DerivativePropContext, KickoffsSevenPlusModel, RecommendationEngine
 
 
@@ -23,7 +24,7 @@ def test_recommendation_engine_prices_under_2_5_from_model_metadata() -> None:
         expected_home_goals=1.1,
         expected_away_goals=0.9,
         confidence_interval=(0.33, 0.47),
-        variance=2.0,
+        variance=0.20,
         calibration_error=0.04,
         component_weights={"poisson_goals": 1.0},
         model_agreement=0.9,
@@ -43,6 +44,48 @@ def test_recommendation_engine_prices_under_2_5_from_model_metadata() -> None:
     recommendation = RecommendationEngine().evaluate(model, market, [], {"under_2_5": 0.61})
     assert recommendation.estimated_probability == 0.61
     assert recommendation.edge > 0
+
+
+def test_total_market_missing_metadata_rejects_without_exception() -> None:
+    model = EnsembleOutput(
+        model_name="weighted_ensemble",
+        match_id="m1",
+        home_win=0.4,
+        draw=0.3,
+        away_win=0.3,
+        expected_home_goals=1.1,
+        expected_away_goals=0.9,
+        confidence_interval=(0.33, 0.47),
+        variance=0.20,
+        calibration_error=0.04,
+        component_weights={"poisson_goals": 1.0},
+        model_agreement=0.9,
+    )
+    market = MarketSnapshot(market_id="KXWCTOTAL-2", match_id="m1", outcome="under_2_5", bid=0.50, ask=0.53, last_price=0.52, volume=10000, liquidity=5000)
+    recommendation = RecommendationEngine().evaluate(model, market, [], {})
+    assert recommendation.status == RecommendationStatus.rejected
+    assert recommendation.rejection_reasons == ["missing_model_probability"]
+
+
+def test_unregistered_derivative_prop_is_rejected() -> None:
+    model = EnsembleOutput(
+        model_name="weighted_ensemble",
+        match_id="m1",
+        home_win=0.4,
+        draw=0.3,
+        away_win=0.3,
+        expected_home_goals=1.1,
+        expected_away_goals=0.9,
+        confidence_interval=(0.33, 0.47),
+        variance=0.20,
+        calibration_error=0.04,
+        component_weights={"poisson_goals": 1.0},
+        model_agreement=0.9,
+    )
+    market = MarketSnapshot(market_id="KXPROP", match_id="m1", outcome="kickoffs_7_plus", bid=0.50, ask=0.53, last_price=0.52, volume=10000, liquidity=5000)
+    recommendation = RecommendationEngine().evaluate(model, market, [], {})
+    assert recommendation.status == RecommendationStatus.rejected
+    assert recommendation.rejection_reasons == ["no_calibrated_model"]
 
 
 def test_derivative_prop_stub_returns_bounded_probability() -> None:

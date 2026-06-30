@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class EnvMode(str, Enum):
     sandbox = "sandbox"
     production = "production"
+    live = "live"
 
 
 class Settings(BaseSettings):
@@ -25,7 +26,7 @@ class Settings(BaseSettings):
     api_football_api_key: str | None = Field(default=None, validation_alias="APIFOOTBALL_API_KEY")
     api_football_world_cup_league_id: str | None = Field(default=None, validation_alias="APIFOOTBALL_WORLD_CUP_LEAGUE_ID")
     kalshi_api_credentials: str | None = Field(default=None, validation_alias="KALSHI_API_CREDENTIALS")
-    live_scheduler_enabled: bool = True
+    live_scheduler_enabled: bool = False
     ingestion_interval_seconds: int = 3600
     market_sync_interval_seconds: int = 120
     model_evaluation_interval_seconds: int = 300
@@ -34,7 +35,13 @@ class Settings(BaseSettings):
 
     @property
     def use_live_data(self) -> bool:
-        return self.env_mode == EnvMode.production
+        return self.env_mode in {EnvMode.production, EnvMode.live}
+
+    @model_validator(mode="after")
+    def forbid_kalshi_credentials_outside_live_mode(self) -> "Settings":
+        if self.kalshi_api_credentials and not self.use_live_data:
+            raise ValueError("KALSHI_API_CREDENTIALS may only be set when ENV_MODE is production or live")
+        return self
 
     @property
     def has_api_football_credentials(self) -> bool:

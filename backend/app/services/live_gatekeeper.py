@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from app.core.config import EnvMode, Settings, settings
+from app.core.config import Settings, settings
 from app.domain.schemas import Match
 
 
@@ -21,7 +21,7 @@ class LiveClockGatekeeper:
 
     def decision_for_match(self, match: Match, now: datetime | None = None) -> LiveGateDecision:
         execution_time = self._utc(now)
-        as_of = execution_time if self.config.env_mode == EnvMode.production else match.kickoff_at - timedelta(minutes=30)
+        as_of = execution_time if self.config.use_live_data else match.kickoff_at - timedelta(minutes=30)
         lock_reason = self._lock_reason(match, execution_time)
         return LiveGateDecision(
             match_id=match.id,

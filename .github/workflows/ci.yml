@@ -10,11 +10,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: python -m pip install -r backend/requirements.txt
-      - run: PYTHONPATH=backend pytest backend/tests
+      - name: Write isolated test env
+        run: |
+          cat > .env.test <<'EOF'
+          ENV_MODE=sandbox
+          POSTGRES_USER=quant
+          POSTGRES_PASSWORD=quant-test
+          POSTGRES_DB=quant
+          REDIS_PASSWORD=redis-test
+          DATABASE_URL=postgresql+psycopg://quant:quant-test@postgres:5432/quant
+          REDIS_URL=redis://:redis-test@redis:6379/0
+          APIFOOTBALL_API_KEY=
+          APIFOOTBALL_WORLD_CUP_LEAGUE_ID=
+          KALSHI_API_CREDENTIALS=
+          LIVE_SCHEDULER_ENABLED=false
+          EOF
+      - run: docker compose run --build --rm backend-test
 
   frontend:
     runs-on: ubuntu-latest

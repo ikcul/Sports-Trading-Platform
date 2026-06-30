@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.core.config import EnvMode, Settings
 from app.domain.schemas import Recommendation, RecommendationStatus
 from app.services.order_executor import LiveOrderExecutor
@@ -48,6 +50,13 @@ def test_settings_reads_operational_credentials_from_env(monkeypatch) -> None:
     assert settings.use_live_data
     assert settings.has_api_football_credentials
     assert settings.has_kalshi_credentials
+
+
+def test_settings_rejects_kalshi_credentials_in_sandbox(monkeypatch) -> None:
+    monkeypatch.setenv("ENV_MODE", "sandbox")
+    monkeypatch.setenv("KALSHI_API_CREDENTIALS", "kalshi-json")
+    with pytest.raises(ValueError):
+        Settings()
 
 
 def test_live_order_executor_previews_and_caps_same_match_exposure() -> None:

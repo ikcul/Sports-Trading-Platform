@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 
 def utcnow() -> datetime:
@@ -109,9 +109,16 @@ class ModelOutput(BaseModel):
     expected_home_goals: float = Field(ge=0.0)
     expected_away_goals: float = Field(ge=0.0)
     confidence_interval: tuple[float, float]
-    variance: float = Field(ge=0.0)
+    variance: float = Field(ge=0.0, le=1.0, description="Normalized model variance in the closed interval [0, 1].")
     calibration_error: float = Field(ge=0.0)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("variance")
+    @classmethod
+    def variance_must_be_normalized(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("variance must be normalized between 0 and 1")
+        return value
 
 
 class EnsembleOutput(ModelOutput):
@@ -120,6 +127,13 @@ class EnsembleOutput(ModelOutput):
 
 
 class MarketSnapshot(BaseModel):
+    """Normalized market snapshot.
+
+    Kalshi-style integer cent prices are accepted at ingestion boundaries and
+    converted to probabilities before validation. Ambiguous zero/100 cent
+    endpoints remain invalid because they imply infinite/zero payout behavior.
+    """
+
     market_id: str
     match_id: str
     outcome: str
@@ -129,6 +143,14 @@ class MarketSnapshot(BaseModel):
     volume: int = Field(ge=0)
     liquidity: float = Field(ge=0.0)
     captured_at: datetime = Field(default_factory=utcnow)
+
+    @field_validator("bid", "ask", "last_price", mode="before")
+    @classmethod
+    def normalize_price(cls, value: float | int | str) -> float:
+        numeric = float(value)
+        if numeric > 1:
+            numeric = numeric / 100
+        return numeric
 
     @computed_field
     @property
@@ -172,4 +194,6 @@ class Recommendation(BaseModel):
 class CoordinatorOutput(BaseModel):
     match_id: str
     pending_tasks: list[str]
-    completed_tasks: list[str]
+    completed_with_evidence: list[str]
+    completed_empty: list[str]
+    failed_agents: list[str]

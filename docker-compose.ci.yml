@@ -1,0 +1,9 @@
+services:
+  backend:
+    depends_on:
+      backend-test:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started

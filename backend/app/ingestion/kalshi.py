@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from app.core.config import settings
 from app.domain.schemas import MarketSnapshot
 
 
@@ -15,6 +16,8 @@ class KalshiConfig:
 
 class KalshiClient:
     def __init__(self, config: KalshiConfig | None = None) -> None:
+        if settings.kalshi_api_credentials and not settings.use_live_data:
+            raise RuntimeError("KALSHI_API_CREDENTIALS must not be configured outside production/live mode")
         self.config = config or KalshiConfig()
 
     async def get_market_snapshot(self, market_ticker: str, match_id: str, outcome: str) -> MarketSnapshot:

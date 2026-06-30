@@ -78,7 +78,20 @@ CREATE TABLE paper_trade_previews (
     generated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE order_submissions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    idempotency_key TEXT NOT NULL UNIQUE,
+    market_id TEXT NOT NULL,
+    side TEXT NOT NULL,
+    quantity NUMERIC(18,8) NOT NULL,
+    price NUMERIC(8,6) NOT NULL,
+    status TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE INDEX evidence_nodes_match_time_idx ON evidence_nodes(match_id, observed_at DESC);
 CREATE INDEX market_snapshots_market_time_idx ON market_snapshots(market_id, captured_at DESC);
 CREATE INDEX model_runs_match_model_idx ON model_runs(match_id, model_name, generated_at DESC);
 CREATE INDEX paper_trade_previews_match_time_idx ON paper_trade_previews(match_id, generated_at DESC);
+CREATE INDEX order_submissions_market_time_idx ON order_submissions(market_id, created_at DESC);

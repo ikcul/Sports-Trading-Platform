@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from math import isfinite, sqrt
 from typing import Any
 
 from app.domain.schemas import EnsembleOutput, EvidenceItem, MarketSnapshot, Match, Recommendation, RecommendationStatus
@@ -9,6 +10,9 @@ from app.services.confidence import ConfidenceScorer
 from app.services.live_gatekeeper import LiveClockGatekeeper
 
 MAX_MATCH_EXPOSURE = 0.05
+MAX_VARIANCE = 0.25
+SUPPORTED_OUTCOMES = {"home_win", "draw", "away_win", "under_2_5", "over_2_5"}
+DERIVATIVE_PROP_OUTCOMES = {"kickoffs_7_plus"}
 
 
 @dataclass(frozen=True)
@@ -51,10 +55,13 @@ class RecommendationEngine:
     def __init__(self, policy: RecommendationPolicy | None = None, derivative_models: list[DerivativePropModel] | None = None) -> None:
         self.policy = policy or RecommendationPolicy()
         self.confidence = ConfidenceScorer()
-        self.derivative_models = {model.market_outcome: model for model in derivative_models or [KickoffsSevenPlusModel()]}
+        self.derivative_models = {model.market_outcome: model for model in derivative_models or []}
 
     def evaluate(self, model: EnsembleOutput, market: MarketSnapshot, evidence: list[EvidenceItem], simulation_summary: dict[str, object]) -> Recommendation:
-        estimated_probability = self._probability_for_outcome(model, market.outcome)
+        probability_result = self._probability_for_outcome(model, market.outcome)
+        if isinstance(probability_result, str):
+            return self._rejected_recommendation(model, market, evidence, simulation_summary, probability_result)
+        estimated_probability = probability_result
         market_probability = market.implied_probability
         edge = estimated_probability - market_probability
         expected_value = (estimated_probability * (1 / market.ask - 1)) - (1 - estimated_probability)
@@ -87,7 +94,7 @@ class RecommendationEngine:
             kelly_fraction=kelly,
             fractional_kelly=kelly * self.policy.fractional_kelly_multiplier,
             confidence_score=confidence,
-            risk_score=max(0.01, 1 - confidence + model.variance / 10 + market.spread),
+            risk_score=max(0.01, 1 - confidence + min(model.variance, MAX_VARIANCE) / MAX_VARIANCE * 0.25 + market.spread),
             evidence_ids=[item.id for item in evidence],
             supporting_evidence=[fact for item in evidence for fact in item.extracted_facts[:2]],
             key_statistics={
@@ -127,23 +134,68 @@ class RecommendationEngine:
             }
         )
 
-    @staticmethod
-    def _probability_for_outcome(model: EnsembleOutput, outcome: str) -> float:
+    def _probability_for_outcome(self, model: EnsembleOutput, outcome: str) -> float | str:
         lookup = {"home_win": model.home_win, "draw": model.draw, "away_win": model.away_win}
+        if outcome in DERIVATIVE_PROP_OUTCOMES and outcome not in self.derivative_models:
+            return "no_calibrated_model"
         if outcome in {"under_2_5", "over_2_5"}:
             value = model.metadata.get(outcome)
             if value is None:
-                raise ValueError(f"model metadata missing probability for outcome: {outcome}")
+                return "missing_model_probability"
             return float(value)
         if outcome not in lookup:
-            raise ValueError(f"unsupported outcome: {outcome}")
+            return "unsupported_outcome"
         return lookup[outcome]
 
     @staticmethod
     def _kelly_fraction(probability: float, price: float) -> float:
+        if not isfinite(probability) or not isfinite(price) or price <= 0 or price >= 1:
+            return 0.0
         net_odds = 1 / price - 1
+        if net_odds <= 0 or not isfinite(net_odds):
+            return 0.0
         fraction = (probability * net_odds - (1 - probability)) / net_odds
+        if not isfinite(fraction):
+            return 0.0
         return max(0.0, min(1.0, fraction))
+
+    def _rejected_recommendation(
+        self,
+        model: EnsembleOutput,
+        market: MarketSnapshot,
+        evidence: list[EvidenceItem],
+        simulation_summary: dict[str, object],
+        reason: str,
+    ) -> Recommendation:
+        confidence = self.confidence.score(evidence, model, market)
+        return Recommendation(
+            market_id=market.market_id,
+            match_id=market.match_id,
+            outcome=market.outcome,
+            status=RecommendationStatus.rejected,
+            estimated_probability=0.0,
+            market_implied_probability=market.implied_probability,
+            edge=0.0,
+            expected_value=0.0,
+            kelly_fraction=0.0,
+            fractional_kelly=0.0,
+            confidence_score=confidence,
+            risk_score=1.0,
+            evidence_ids=[item.id for item in evidence],
+            supporting_evidence=[fact for item in evidence for fact in item.extracted_facts[:2]],
+            key_statistics={
+                "expected_home_goals": model.expected_home_goals,
+                "expected_away_goals": model.expected_away_goals,
+                "model_agreement": model.model_agreement,
+                "calibration_error": model.calibration_error,
+                "market_ask": market.ask,
+            },
+            simulation_summary=simulation_summary,
+            risks=["Market was rejected before sizing because no calibrated deterministic probability was available."],
+            counterarguments=[c for item in evidence for c in item.contradictions],
+            invalidation_triggers=[],
+            rejection_reasons=[reason],
+        )
 
 
 class PortfolioRiskCovarianceFilter:
@@ -160,22 +212,45 @@ class PortfolioRiskCovarianceFilter:
         adjusted = list(records)
         index_by_id = {id(record): idx for idx, record in enumerate(adjusted)}
         for match_records in grouped.values():
-            if len(match_records) < 2:
-                continue
             total_exposure = sum(record.recommendation.fractional_kelly for record in match_records)
             cap_scale = min(1.0, self.max_match_exposure / total_exposure) if total_exposure > 0 else 1.0
-            joint_probability = self._average_joint_probability(match_records)
-            covariance_scale = self._covariance_scale(joint_probability)
+            correlation = self._average_correlation([record.recommendation for record in match_records])
+            covariance_scale = self._covariance_scale(correlation)
             scale = min(cap_scale, covariance_scale)
             if scale >= 0.999:
                 continue
             for record in match_records:
-                adjusted_record = self._scale_record(record, scale, total_exposure, joint_probability)
+                adjusted_record = self._scale_record(record, scale, total_exposure, correlation)
                 adjusted[index_by_id[id(record)]] = adjusted_record
         return adjusted
 
-    def _scale_record(self, record: Any, scale: float, pre_filter_exposure: float, joint_probability: float) -> Any:
+    def apply_live_cap(self, recommendations: list[Recommendation]) -> list[Recommendation]:
+        adjusted = list(recommendations)
+        index_by_id = {id(recommendation): idx for idx, recommendation in enumerate(adjusted)}
+        grouped: dict[str, list[Recommendation]] = {}
+        for recommendation in recommendations:
+            if recommendation.status == RecommendationStatus.recommended and recommendation.fractional_kelly > 0:
+                grouped.setdefault(recommendation.match_id, []).append(recommendation)
+        for match_recommendations in grouped.values():
+            total_exposure = sum(recommendation.fractional_kelly for recommendation in match_recommendations)
+            cap_scale = min(1.0, self.max_match_exposure / total_exposure) if total_exposure > 0 else 1.0
+            correlation = self._average_correlation(match_recommendations)
+            scale = min(cap_scale, self._covariance_scale(correlation))
+            if scale >= 0.999:
+                continue
+            for recommendation in match_recommendations:
+                adjusted[index_by_id[id(recommendation)]] = self._scale_recommendation(recommendation, scale, total_exposure, correlation)
+        return adjusted
+
+    def _scale_record(self, record: Any, scale: float, pre_filter_exposure: float, correlation: float) -> Any:
         recommendation = record.recommendation
+        scaled_recommendation = self._scale_recommendation(recommendation, scale, pre_filter_exposure, correlation)
+        won = record.actual_outcome == recommendation.outcome
+        ask = float(scaled_recommendation.key_statistics.get("market_ask", recommendation.market_implied_probability))
+        profit_loss = self._stake_profit_loss(ask, won, scaled_recommendation.fractional_kelly)
+        return record.model_copy(update={"recommendation": scaled_recommendation, "profit_loss": profit_loss})
+
+    def _scale_recommendation(self, recommendation: Recommendation, scale: float, pre_filter_exposure: float, correlation: float) -> Recommendation:
         scaled_fractional = recommendation.fractional_kelly * scale
         key_statistics = {
             **recommendation.key_statistics,
@@ -183,23 +258,13 @@ class PortfolioRiskCovarianceFilter:
             "portfolio_scale": scale,
             "match_exposure_cap": self.max_match_exposure,
             "pre_filter_match_exposure": pre_filter_exposure,
-            "joint_probability_avg": joint_probability,
+            "correlation_avg": correlation,
         }
         risks = [
             *recommendation.risks,
             "Portfolio covariance filter scaled stake for same-match correlated exposure.",
         ]
-        scaled_recommendation = recommendation.model_copy(
-            update={
-                "fractional_kelly": scaled_fractional,
-                "key_statistics": key_statistics,
-                "risks": risks,
-            }
-        )
-        won = record.actual_outcome == recommendation.outcome
-        ask = float(key_statistics.get("market_ask", recommendation.market_implied_probability))
-        profit_loss = self._stake_profit_loss(ask, won, scaled_fractional)
-        return record.model_copy(update={"recommendation": scaled_recommendation, "profit_loss": profit_loss})
+        return recommendation.model_copy(update={"fractional_kelly": scaled_fractional, "key_statistics": key_statistics, "risks": risks})
 
     @staticmethod
     def _stake_profit_loss(price: float, won: bool, stake: float) -> float:
@@ -208,14 +273,14 @@ class PortfolioRiskCovarianceFilter:
         return stake * ((1 / price) - 1) if won else -stake
 
     @staticmethod
-    def _average_joint_probability(records: list[Any]) -> float:
-        values: list[float] = []
-        for left_index, left in enumerate(records):
-            for right in records[left_index + 1 :]:
-                value = PortfolioRiskCovarianceFilter._joint_probability(left.recommendation, right.recommendation)
+    def _average_correlation(recommendations: list[Recommendation]) -> float:
+        correlations: list[float] = []
+        for left_index, left in enumerate(recommendations):
+            for right in recommendations[left_index + 1 :]:
+                value = PortfolioRiskCovarianceFilter._correlation(left, right)
                 if value is not None:
-                    values.append(value)
-        return sum(values) / len(values) if values else 0.0
+                    correlations.append(value)
+        return sum(correlations) / len(correlations) if correlations else 0.0
 
     @staticmethod
     def _joint_probability(left: Recommendation, right: Recommendation) -> float | None:
@@ -231,7 +296,19 @@ class PortfolioRiskCovarianceFilter:
         return None
 
     @staticmethod
-    def _covariance_scale(joint_probability: float) -> float:
-        if joint_probability <= 0:
+    def _correlation(left: Recommendation, right: Recommendation) -> float | None:
+        joint = PortfolioRiskCovarianceFilter._joint_probability(left, right)
+        if joint is None:
+            return None
+        left_probability = left.estimated_probability
+        right_probability = right.estimated_probability
+        denominator = sqrt(left_probability * (1 - left_probability) * right_probability * (1 - right_probability))
+        if denominator <= 0:
+            return None
+        return max(-1.0, min(1.0, (joint - left_probability * right_probability) / denominator))
+
+    @staticmethod
+    def _covariance_scale(correlation: float) -> float:
+        if correlation <= 0:
             return 1.0
-        return max(0.50, min(1.0, 1.0 - joint_probability))
+        return max(0.50, min(1.0, 1.0 - correlation * 0.5))

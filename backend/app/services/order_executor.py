@@ -10,9 +10,9 @@ from typing import Protocol
 import psycopg
 from psycopg.types.json import Json
 
-from app.core.config import EnvMode, Settings, settings
+from app.core.config import Settings, settings
 from app.domain.schemas import Recommendation, RecommendationStatus
-from app.services.recommendations import MAX_MATCH_EXPOSURE
+from app.services.recommendations import MAX_MATCH_EXPOSURE, PortfolioRiskCovarianceFilter
 
 logger = logging.getLogger(__name__)
 
@@ -96,72 +96,36 @@ class LiveOrderExecutor:
         self.log_store = log_store or JsonlPaperTradeLogStore(config.paper_trade_log_path)
 
     def submit_portfolio_positions(self, recommendations: list[Recommendation]) -> list[ExecutionPreview]:
+        filtered_recommendations = PortfolioRiskCovarianceFilter(self.max_match_exposure).apply_live_cap(recommendations)
         executable = [
             recommendation
-            for recommendation in recommendations
+            for recommendation in filtered_recommendations
             if recommendation.status == RecommendationStatus.recommended and recommendation.fractional_kelly > 0
         ]
-        scaled_stakes = self._scale_same_match_exposure(executable)
         previews: list[ExecutionPreview] = []
         for recommendation in executable:
-            stake = scaled_stakes[id(recommendation)]
             message = (
                 "LIVE REAL-TIME PREVIEW: "
                 f"[Match ID: {recommendation.match_id}] "
                 f"[Market: {recommendation.market_id}] "
                 f"[Edge: {recommendation.edge:.6f}] "
                 "[Action: Recommended] -> "
-                f"Target Stake: {stake:.6f} units."
+                f"Target Stake: {recommendation.fractional_kelly:.6f} units."
             )
             logger.info(message)
             preview = ExecutionPreview(
                 match_id=recommendation.match_id,
                 market_id=recommendation.market_id,
                 outcome=recommendation.outcome,
-                pre_scale_stake=recommendation.fractional_kelly,
-                post_scale_stake=stake,
+                pre_scale_stake=recommendation.key_statistics.get("pre_filter_fractional_kelly", recommendation.fractional_kelly),
+                post_scale_stake=recommendation.fractional_kelly,
                 message=message,
             )
             self.log_store.record_preview(preview, recommendation)
             previews.append(preview)
-        if self.config.env_mode != EnvMode.production:
+        if not self.config.use_live_data:
             logger.info("Sandbox mode active: generated execution previews only; no live Kalshi orders were submitted.")
         return previews
-
-    def _scale_same_match_exposure(self, recommendations: list[Recommendation]) -> dict[int, float]:
-        grouped: dict[str, list[Recommendation]] = {}
-        for recommendation in recommendations:
-            grouped.setdefault(recommendation.match_id, []).append(recommendation)
-
-        scaled: dict[int, float] = {}
-        for match_recommendations in grouped.values():
-            total = sum(recommendation.fractional_kelly for recommendation in match_recommendations)
-            cap_scale = min(1.0, self.max_match_exposure / total) if total > 0 else 1.0
-            covariance_scale = self._covariance_scale(match_recommendations)
-            scale = min(cap_scale, covariance_scale)
-            for recommendation in match_recommendations:
-                scaled[id(recommendation)] = recommendation.fractional_kelly * scale
-        return scaled
-
-    @staticmethod
-    def _covariance_scale(recommendations: list[Recommendation]) -> float:
-        if len(recommendations) < 2:
-            return 1.0
-        joint_probabilities: list[float] = []
-        for left_index, left in enumerate(recommendations):
-            for right in recommendations[left_index + 1 :]:
-                for key in (f"{left.outcome}_{right.outcome}", f"{right.outcome}_{left.outcome}"):
-                    if key in left.simulation_summary:
-                        joint_probabilities.append(float(left.simulation_summary[key]))
-                        break
-                    if key in right.simulation_summary:
-                        joint_probabilities.append(float(right.simulation_summary[key]))
-                        break
-        if not joint_probabilities:
-            return 1.0
-        average_joint = sum(joint_probabilities) / len(joint_probabilities)
-        return max(0.50, min(1.0, 1.0 - average_joint))
-
 
 def _preview_payload(preview: ExecutionPreview, recommendation: Recommendation) -> dict[str, object]:
     return {

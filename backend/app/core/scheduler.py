@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from app.core.config import EnvMode, Settings, settings
+from app.core.config import Settings, settings
 from app.services.order_executor import LiveOrderExecutor, PostgresPaperTradeLogStore
 
 logger = logging.getLogger(__name__)
@@ -88,7 +88,7 @@ class LiveDataOrchestrator:
         self.config = config
         self.executor = executor or LiveOrderExecutor(
             config=config,
-            log_store=PostgresPaperTradeLogStore(config.database_url) if config.env_mode == EnvMode.production else None,
+            log_store=PostgresPaperTradeLogStore(config.database_url) if config.use_live_data else None,
         )
 
     async def poll_ingestion(self) -> None:

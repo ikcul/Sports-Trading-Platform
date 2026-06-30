@@ -64,4 +64,25 @@ def test_portfolio_filter_caps_same_match_fractional_kelly_and_recomputes_pnl() 
     exposure = sum(record.recommendation.fractional_kelly for record in filtered)
     assert exposure <= MAX_MATCH_EXPOSURE
     assert abs(filtered[0].recommendation.key_statistics["pre_filter_match_exposure"] - 0.15) < 1e-12
+    assert "correlation_avg" in filtered[0].recommendation.key_statistics
     assert filtered[0].profit_loss == filtered[0].recommendation.fractional_kelly
+
+
+def test_portfolio_filter_caps_single_oversized_position() -> None:
+    records = [
+        ReplayRecord(
+            match_id="match-1",
+            as_of=datetime.now(timezone.utc),
+            actual_outcome="home_win",
+            estimated_probability=0.6,
+            market_probability=0.5,
+            closing_probability=0.52,
+            brier=0.16,
+            log_loss=0.5,
+            closing_line_value=0.08,
+            profit_loss=0.08,
+            recommendation=_recommendation("home_win", 0.08),
+        )
+    ]
+    filtered = PortfolioRiskCovarianceFilter().apply_to_replay_records(records)
+    assert filtered[0].recommendation.fractional_kelly <= MAX_MATCH_EXPOSURE
