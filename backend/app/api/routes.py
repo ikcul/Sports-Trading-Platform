@@ -12,6 +12,7 @@ from app.core.scheduler import scheduler_status
 from app.domain.schemas import EvidenceItem, Match, MarketSnapshot, Recommendation, TeamStats
 from app.models.probability import BayesianUpdater, EloModel, EnsembleModel, MonteCarloSimulator, PoissonGoalModel
 from app.services.explainability import ExplainabilityEngine
+from app.services.paper_trades import PaperTradePreview, PaperTradeRepository
 from app.services.recommendations import RecommendationEngine
 
 router = APIRouter()
@@ -25,6 +26,11 @@ async def health() -> dict[str, str]:
 @router.get("/scheduler")
 async def scheduler(request: Request) -> dict[str, object]:
     return scheduler_status(getattr(request.app.state, "scheduler", None))
+
+
+@router.get("/paper-trades")
+async def paper_trades(limit: int = 100) -> list[PaperTradePreview]:
+    return PaperTradeRepository().list_recent(limit=max(1, min(limit, 500)))
 
 
 @router.get("/matches")

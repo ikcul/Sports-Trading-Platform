@@ -1,7 +1,9 @@
-import { Activity, Database, LineChart, ShieldCheck } from "lucide-react";
+import { Database, LineChart, ShieldCheck } from "lucide-react";
 import { Metric } from "@/components/Metric";
 import { RecommendationTable } from "@/components/RecommendationTable";
-import { getRecommendations } from "@/lib/api";
+import { SchedulerStatus } from "@/components/SchedulerStatus";
+import { TradeLedger } from "@/components/TradeLedger";
+import { getPaperTrades, getRecommendations, getSchedulerState } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
@@ -10,29 +12,36 @@ function pct(value: number) {
 }
 
 export default async function Page() {
-  const recommendations = await getRecommendations();
+  const [recommendations, scheduler, trades] = await Promise.all([getRecommendations(), getSchedulerState(), getPaperTrades()]);
   const top = recommendations[0];
+  const totalPositions = trades.length;
+  const averageEdge = totalPositions > 0 ? trades.reduce((sum, trade) => sum + trade.edge, 0) / totalPositions : 0;
+  const groupedMatches = new Set(trades.filter((trade) => trades.some((other) => other.match_id === trade.match_id && other.id !== trade.id)).map((trade) => trade.match_id)).size;
 
   return (
     <main className="min-h-screen">
       <header className="border-b border-border bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-6 py-5">
           <div>
             <h1 className="text-xl font-semibold">Quantitative Sports Trading</h1>
-            <p className="mt-1 text-sm text-slate-600">Evidence graph, deterministic models, market comparison, explainable recommendations</p>
+            <p className="mt-1 text-sm text-slate-600">Live paper-trading heartbeat, portfolio risk controls, and explainable model recommendations</p>
           </div>
-          <div className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm">
-            <Activity className="h-4 w-4 text-accent" />
-            Live research loop
-          </div>
+          <SchedulerStatus state={scheduler} />
         </div>
       </header>
       <div className="mx-auto grid max-w-7xl gap-6 px-6 py-6">
         <section className="grid gap-4 md:grid-cols-4">
-          <Metric label="Estimated probability" value={pct(top.estimated_probability)} tone="signal" />
-          <Metric label="Market implied" value={pct(top.market_implied_probability)} />
-          <Metric label="Edge" value={pct(top.edge)} tone="signal" />
-          <Metric label="Confidence" value={pct(top.confidence_score)} />
+          <Metric label="Live positions" value={String(totalPositions)} tone={totalPositions > 0 ? "signal" : "default"} />
+          <Metric label="Max match exposure" value="5.0%" />
+          <Metric label="Average edge" value={pct(averageEdge)} tone={averageEdge > 0 ? "signal" : "default"} />
+          <Metric label="Grouped matches" value={String(groupedMatches)} />
+        </section>
+        <TradeLedger trades={trades} />
+        <section className="grid gap-4 md:grid-cols-4">
+          <Metric label="Sample estimated probability" value={pct(top.estimated_probability)} tone="signal" />
+          <Metric label="Sample market implied" value={pct(top.market_implied_probability)} />
+          <Metric label="Sample edge" value={pct(top.edge)} tone="signal" />
+          <Metric label="Sample confidence" value={pct(top.confidence_score)} />
         </section>
         <section className="grid gap-6 lg:grid-cols-[1.5fr_1fr]">
           <RecommendationTable rows={recommendations} />

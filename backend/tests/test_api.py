@@ -27,3 +27,10 @@ def test_api_exposes_sample_backtest() -> None:
     body = response.json()
     assert body["replay_count"] == 4
     assert "calibration_buckets" in body
+
+
+def test_api_exposes_empty_paper_trade_ledger_boundary() -> None:
+    client = TestClient(app)
+    response = client.get("/api/paper-trades")
+    assert response.status_code == 200
+    assert isinstance(response.json(), list)
