@@ -38,6 +38,7 @@ services:
         condition: service_started
     volumes:
       - ./data/world_cup_2026_jun11_jun28_real:/app/data/world_cup_2026_jun11_jun28_real:ro
+      - ./tools:/app/tools:ro
     ports:
       - "8000:8000"
 
