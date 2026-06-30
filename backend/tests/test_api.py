@@ -29,6 +29,13 @@ def test_api_exposes_sample_backtest() -> None:
     assert "calibration_buckets" in body
 
 
+def test_health_dependencies_are_opt_in() -> None:
+    client = TestClient(app)
+    response = client.get("/api/health?include_dependencies=true")
+    assert response.status_code == 200
+    assert "redis" in response.json()
+
+
 def test_api_exposes_empty_paper_trade_ledger_boundary() -> None:
     client = TestClient(app)
     response = client.get("/api/paper-trades")

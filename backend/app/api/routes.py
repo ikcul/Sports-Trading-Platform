@@ -8,6 +8,7 @@ from app.agents.research import InjuryAgent, NewsAgent, ResearchCoordinator, Tac
 from app.backtesting.engine import BacktestEngine
 from app.backtesting.sample_data import sample_historical_snapshots
 from app.backtesting.schemas import BacktestReport
+from app.core.redis_client import redis_healthcheck
 from app.core.scheduler import scheduler_status
 from app.domain.schemas import EvidenceItem, Match, MarketSnapshot, Recommendation, TeamStats
 from app.models.probability import BayesianUpdater, EloModel, EnsembleModel, MonteCarloSimulator, PoissonGoalModel
@@ -19,8 +20,11 @@ router = APIRouter()
 
 
 @router.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health(include_dependencies: bool = False) -> dict[str, object]:
+    payload: dict[str, object] = {"status": "ok"}
+    if include_dependencies:
+        payload["redis"] = await redis_healthcheck()
+    return payload
 
 
 @router.get("/scheduler")
