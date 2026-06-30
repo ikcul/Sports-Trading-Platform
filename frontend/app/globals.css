@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 210 20% 98%;
+  --foreground: 215 25% 15%;
+  --border: 214 15% 85%;
+  --muted: 212 16% 92%;
+  --accent: 172 55% 32%;
+  --signal: 145 52% 33%;
+  --risk: 7 72% 48%;
+}
+
+body {
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+
+.panel {
+  border: 1px solid hsl(var(--border));
+  background: white;
+  border-radius: 8px;
+}

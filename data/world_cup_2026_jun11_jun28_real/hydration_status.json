@@ -1,0 +1,9 @@
+{
+  "status": "blocked_missing_apifootball_credentials",
+  "required_env": [
+    "APIFOOTBALL_API_KEY",
+    "APIFOOTBALL_WORLD_CUP_LEAGUE_ID"
+  ],
+  "partition": "data/world_cup_2026_jun11_jun28_real",
+  "reason": "Real partition hydration requires provider credentials and a verified competition id."
+}
