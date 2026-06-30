@@ -6,6 +6,14 @@ from app.services.order_executor import LiveOrderExecutor
 from app.services.recommendations import MAX_MATCH_EXPOSURE
 
 
+class MemoryLogStore:
+    def __init__(self) -> None:
+        self.records = []
+
+    def record_preview(self, preview, recommendation) -> None:
+        self.records.append((preview, recommendation))
+
+
 def _recommendation(outcome: str, fractional_kelly: float, status: RecommendationStatus = RecommendationStatus.recommended) -> Recommendation:
     return Recommendation(
         market_id=f"ticker-{outcome}",
@@ -43,7 +51,8 @@ def test_settings_reads_operational_credentials_from_env(monkeypatch) -> None:
 
 
 def test_live_order_executor_previews_and_caps_same_match_exposure() -> None:
-    executor = LiveOrderExecutor(config=Settings(env_mode=EnvMode.sandbox))
+    store = MemoryLogStore()
+    executor = LiveOrderExecutor(config=Settings(env_mode=EnvMode.sandbox), log_store=store)
     previews = executor.submit_portfolio_positions(
         [
             _recommendation("home_win", 0.08),
@@ -53,4 +62,5 @@ def test_live_order_executor_previews_and_caps_same_match_exposure() -> None:
     )
     assert len(previews) == 2
     assert sum(preview.post_scale_stake for preview in previews) <= MAX_MATCH_EXPOSURE
-    assert "LIVE DEPLOYMENT PREVIEW" in previews[0].message
+    assert "LIVE REAL-TIME PREVIEW" in previews[0].message
+    assert len(store.records) == 2

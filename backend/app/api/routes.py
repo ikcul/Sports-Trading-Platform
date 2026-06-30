@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from app.agents.research import InjuryAgent, NewsAgent, ResearchCoordinator, TacticalAgent
 from app.backtesting.engine import BacktestEngine
 from app.backtesting.sample_data import sample_historical_snapshots
 from app.backtesting.schemas import BacktestReport
+from app.core.scheduler import scheduler_status
 from app.domain.schemas import EvidenceItem, Match, MarketSnapshot, Recommendation, TeamStats
 from app.models.probability import BayesianUpdater, EloModel, EnsembleModel, MonteCarloSimulator, PoissonGoalModel
 from app.services.explainability import ExplainabilityEngine
@@ -19,6 +20,11 @@ router = APIRouter()
 @router.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@router.get("/scheduler")
+async def scheduler(request: Request) -> dict[str, object]:
+    return scheduler_status(getattr(request.app.state, "scheduler", None))
 
 
 @router.get("/matches")

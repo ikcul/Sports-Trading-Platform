@@ -4,8 +4,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
-from app.domain.schemas import EnsembleOutput, EvidenceItem, MarketSnapshot, Recommendation, RecommendationStatus
+from app.domain.schemas import EnsembleOutput, EvidenceItem, MarketSnapshot, Match, Recommendation, RecommendationStatus
 from app.services.confidence import ConfidenceScorer
+from app.services.live_gatekeeper import LiveClockGatekeeper
 
 MAX_MATCH_EXPOSURE = 0.05
 
@@ -101,6 +102,29 @@ class RecommendationEngine:
             counterarguments=[c for item in evidence for c in item.contradictions],
             invalidation_triggers=["Confirmed lineup contradicts current availability assumptions.", "Bid/ask spread widens beyond policy maximum.", "New high-credibility evidence conflicts with current evidence graph."],
             rejection_reasons=reasons,
+        )
+
+    def evaluate_live(
+        self,
+        match: Match,
+        model: EnsembleOutput,
+        market: MarketSnapshot,
+        evidence: list[EvidenceItem],
+        simulation_summary: dict[str, object],
+        gatekeeper: LiveClockGatekeeper | None = None,
+    ) -> Recommendation:
+        gate = (gatekeeper or LiveClockGatekeeper()).decision_for_match(match)
+        gated_evidence = [item for item in evidence if item.observed_at <= gate.as_of]
+        recommendation = self.evaluate(model, market, gated_evidence, simulation_summary)
+        return recommendation.model_copy(
+            update={
+                "simulation_summary": {
+                    **recommendation.simulation_summary,
+                    "operational_as_of": gate.as_of.isoformat(),
+                    "evidence_snapshot_locked": gate.snapshot_locked,
+                    "lock_reason": gate.lock_reason or "",
+                }
+            }
         )
 
     @staticmethod
