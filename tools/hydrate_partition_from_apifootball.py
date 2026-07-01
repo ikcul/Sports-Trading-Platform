@@ -31,7 +31,7 @@ TEAM_ALIASES = {
 
 sys.path.insert(0, str(BACKEND))
 
-from app.ingestion.open_sports_data_client import APIFootballClient, OpenFixture  # noqa: E402
+from app.ingestion.open_sports_data_client import APIFootballClient, APIFootballProviderError, OpenFixture  # noqa: E402
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
@@ -140,7 +140,22 @@ async def main() -> None:
             }
         )
         return
-    provider_fixtures = await client.fixtures(competition=competition, season=2026, date_from=DATE_FROM, date_to=DATE_TO)
+    try:
+        provider_fixtures = await client.fixtures(competition=competition, season=2026, date_from=DATE_FROM, date_to=DATE_TO)
+    except APIFootballProviderError as exc:
+        write_status(
+            {
+                "status": "blocked_provider_access_error",
+                "provider": "api-football",
+                "errors": exc.errors,
+                "league_id": competition,
+                "season": 2026,
+                "date_from": DATE_FROM,
+                "date_to": DATE_TO,
+                "reason": "Provider accepted the request but refused fixture access for this competition/season.",
+            }
+        )
+        return
     record_quota_call("fixtures")
     if len(provider_fixtures) != EXPECTED_MATCH_COUNT:
         write_status(
@@ -198,7 +213,19 @@ async def main() -> None:
                 }
             )
             return
-        snapshot = await client.performance_snapshot(fixture, as_of)
+        try:
+            snapshot = await client.performance_snapshot(fixture, as_of)
+        except APIFootballProviderError as exc:
+            write_status(
+                {
+                    "status": "blocked_provider_access_error",
+                    "provider": "api-football",
+                    "errors": exc.errors,
+                    "provider_match_id": fixture.provider_match_id,
+                    "reason": "Provider refused point-in-time performance snapshot access.",
+                }
+            )
+            return
         record_quota_call("performance_snapshot")
         if snapshot.observed_at >= fixture.kickoff_at:
             write_status(

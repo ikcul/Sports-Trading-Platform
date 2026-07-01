@@ -4,7 +4,7 @@ from datetime import timedelta
 
 import pytest
 
-from app.ingestion.open_sports_data_client import APIFootballClient
+from app.ingestion.open_sports_data_client import APIFootballClient, APIFootballProviderError
 
 
 def test_api_football_sample_payload_parses_fixture_and_stats_before_as_of() -> None:
@@ -100,3 +100,31 @@ def test_api_football_completed_fixture_filter_and_rolling_stats_are_point_in_ti
     stats = APIFootballClient._rolling_stats_from_completed_fixtures("Korea Republic", rows)
     assert len(rows) == 1
     assert stats.xg_for > stats.xg_against
+
+
+@pytest.mark.asyncio
+async def test_api_football_get_raises_provider_error(monkeypatch) -> None:
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"errors": {"plan": "Free plans do not have access to this season."}}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def get(self, path, params):
+            return FakeResponse()
+
+    monkeypatch.setattr("app.ingestion.open_sports_data_client.httpx.AsyncClient", FakeClient)
+    with pytest.raises(APIFootballProviderError) as exc:
+        await APIFootballClient(api_key="test")._get("/fixtures", {"league": 1})
+    assert "plan" in exc.value.errors

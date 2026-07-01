@@ -10,6 +10,12 @@ import httpx
 from app.domain.schemas import TeamStats
 
 
+class APIFootballProviderError(RuntimeError):
+    def __init__(self, errors: Any) -> None:
+        self.errors = errors
+        super().__init__(f"API-Football provider returned errors: {errors}")
+
+
 @dataclass(frozen=True)
 class OpenFixture:
     provider: str
@@ -138,7 +144,10 @@ class APIFootballClient(OpenSportsDataClient):
         async with httpx.AsyncClient(base_url=self.base_url, headers={"x-apisports-key": self.api_key}, timeout=30) as client:
             response = await client.get(path, params=params)
             response.raise_for_status()
-            return response.json()
+            payload = response.json()
+        if payload.get("errors"):
+            raise APIFootballProviderError(payload["errors"])
+        return payload
 
     async def _completed_team_fixtures_before(self, team_id: int, season: int, as_of: datetime) -> list[dict[str, Any]]:
         payload = await self._get(
